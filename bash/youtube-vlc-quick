@@ -1,0 +1,22 @@
+#!/bin/bash
+# VLC плеер для YouTube
+URL="$1"
+[ -z "$URL" ] && exit 1
+
+# Нормализуем URL если это ID
+if [[ "$URL" =~ ^[A-Za-z0-9_-]{11}$ ]]; then
+    URL="https://www.youtube.com/watch?v=$URL"
+fi
+
+# Получаем ссылку в лучшем качестве до 1080p
+STREAM_URL=$(yt-dlp --cookies-from-browser brave \
+    --format "best[height<=1080]" \
+    --get-url \
+    --quiet \
+    "$URL" 2>/dev/null)
+
+# Запускаем VLC
+exec vlc "${STREAM_URL:-$URL}" \
+    --play-and-exit \
+    --quiet \
+    --network-caching=2000

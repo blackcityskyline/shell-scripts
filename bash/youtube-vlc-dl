@@ -1,0 +1,65 @@
+#!/bin/bash
+# youtube-vlc-quick - версия с ожиданием файла
+
+URL="$1"
+VIDEO_ID=$(echo "$URL" | grep -o '[A-Za-z0-9_-]\{11\}' | head -1)
+
+echo "⚡ Быстрый запуск: $VIDEO_ID"
+
+# Создаем буферный файл
+BUFFER_FILE="/tmp/yt_quick_$$.mp4"
+
+# Функция завершения
+cleanup() {
+    rm -f "$BUFFER_FILE" 2>/dev/null
+    pkill -f "vlc.*$BUFFER_FILE" 2>/dev/null
+    exit 0
+}
+trap cleanup SIGINT SIGTERM EXIT
+
+# Скачиваем первые 30 секунд для быстрого старта
+echo "📥 Буферизация первых 30 секунд..."
+yt-dlp --cookies-from-browser brave \
+    --no-warnings \
+    --quiet \
+    --format "best[ext=mp4][height<=720]" \
+    --download-sections "*0:00-0:30" \
+    --output "$BUFFER_FILE" \
+    --no-part \
+    "https://www.youtube.com/watch?v=$VIDEO_ID" &
+
+# Ждем пока файл появится и будет не пустым
+echo "⏳ Ожидание загрузки..."
+for i in {1..30}; do
+    if [ -f "$BUFFER_FILE" ] && [ -s "$BUFFER_FILE" ]; then
+        SIZE=$(stat -c%s "$BUFFER_FILE" 2>/dev/null)
+        if [ "$SIZE" -gt 100000 ]; then  # Хотя бы 100KB
+            echo "✅ Файл готов ($(numfmt --to=iec $SIZE))"
+            break
+        fi
+    fi
+    sleep 1
+    echo -n "."
+done
+echo ""
+
+if [ ! -f "$BUFFER_FILE" ] || [ ! -s "$BUFFER_FILE" ]; then
+    echo "❌ Не удалось загрузить буфер"
+    echo "Пробуем альтернативный метод..."
+    # Запасной вариант: прямой запуск
+    exec mpv "https://youtu.be/$VIDEO_ID" --ytdl-format="best[height<=720]"
+    exit 0
+fi
+
+echo ""
+echo "🚀 Запуск VLC с поддержкой перемотки"
+echo "═══════════════════════════════════════════════════"
+echo " Управление: ←/→ (±10сек) ↑/↓ (±1мин) Space F Q"
+echo "═══════════════════════════════════════════════════"
+echo ""
+
+# Запускаем VLC с локальным файлом
+exec vlc "$BUFFER_FILE" \
+    --play-and-exit \
+    --no-video-title-show \
+    --file-caching=1000
