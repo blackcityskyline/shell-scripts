@@ -1,0 +1,9 @@
+#!/bin/bash
+
+if [ "$XDG_SESSION_TYPE" = "wayland" ]; then
+    # Запустить Chromium в режиме Wayland, если сессия Wayland
+    chromium --ozone-platform=wayland "$@"
+else
+    # В противном случае — запуск в X11
+    chromium --ozone-platform=x11 "$@"
+fi
