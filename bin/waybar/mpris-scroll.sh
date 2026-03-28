@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
 
-player_status=$(playerctl status 2>/dev/null)
+player_status=$(playerctl --player=kew,playerctld,%any status 2>/dev/null)
 
 if [ "$player_status" = "Playing" ] || [ "$player_status" = "Paused" ]; then
-  artist=$(playerctl metadata artist 2>/dev/null || echo "") # Unknow Arist
-  title=$(playerctl metadata title 2>/dev/null || echo "hmmm?")
+  artist=$(playerctl --player=kew,playerctld,%any metadata artist 2>/dev/null || echo "") # Unknow Arist
+  title=$(playerctl --player=kew,playerctld,%any metadata title 2>/dev/null || echo "hmmm?")
 
   # Убираем кавычки и лишние символы
   artist=$(echo "$artist" | sed 's/["'\'']//g' | xargs)

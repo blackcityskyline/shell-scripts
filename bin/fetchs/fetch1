@@ -12,7 +12,7 @@ wm="${wm%% *}"
 kernel="$(uname -r | cut -d '-' -f1)"
 
 # ─────────────────────────────────────────────────────
-# Age через дату установки пакета filesystem
+# Age from filesystem install date
 if [ -f /var/lib/pacman/local/filesystem-*/desc ]; then
   install_epoch=$(grep -A1 '%INSTALLDATE%' /var/lib/pacman/local/filesystem-*/desc | tail -n1 | tr -d ' ')
   if [[ "$install_epoch" =~ ^[0-9]+$ ]]; then
@@ -26,7 +26,7 @@ else
 fi
 # ─────────────────────────────────────────────────────
 
-# Цвета
+# Colors
 white='\033[37m'
 cyan='\033[36m'
 blue='\033[34m'

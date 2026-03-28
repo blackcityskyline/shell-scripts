@@ -348,6 +348,30 @@ case "$1" in
   exit 0
   ;;
 
+"")
+  # No args: show interactive menu
+  echo ""
+  echo "  ▄▄▄· ▄▄▄   ▄▄·  ▄ .▄ "
+  echo " ▐█ ▀█ ▀▄ █·▐█ ▌▪██▪▐█ "
+  echo " ▄█▀▀█ ▐▀▀▄ ██ ▄▄██▀▐█ "
+  echo " ▐█ ▪▐▌▐█•█▌▐███▌██▌▐▀ "
+  echo "  ▀  ▀ .▀  ▀·▀▀▀ ▀▀▀ · "
+  echo ""
+  echo "  1) check    — show update counts"
+  echo "  2) up       — run updates"
+  echo "  3) upgrade  — detailed status"
+  echo "  4) exit"
+  echo ""
+  read -p "  > " choice
+  echo ""
+  case "$choice" in
+    1|check)   exec "$0" check ;;
+    2|up)      exec "$0" up ;;
+    3|upgrade) exec "$0" upgrade ;;
+    *)         exit 0 ;;
+  esac
+  ;;
+
 *)
   # Default: output JSON for Waybar (старый формат для совместимости)
   get_aur_helper

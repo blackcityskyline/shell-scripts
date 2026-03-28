@@ -144,6 +144,19 @@ enable_visuals() {
 }
 
 # ===========================================
+# Режим --status: возвращает true если visuals включены
+# Используется swaync для подсветки кнопки
+# ===========================================
+if [ "$1" = "--status" ]; then
+  if [ -f "$STATE_FILE" ]; then
+    echo false   # STATE_FILE существует = visuals отключены
+  else
+    echo true    # STATE_FILE нет = visuals включены
+  fi
+  exit 0
+fi
+
+# ===========================================
 # Режим --restore: запускается при старте Hyprland (exec-once)
 # ===========================================
 if [ "$1" = "--restore" ]; then
