@@ -1,11 +1,10 @@
 #!/bin/bash
-# ~/bin/dotfiles-diff.sh
+# ~/bin/git-diff.sh
 # Usage:
-#   dotfiles-diff.sh                        — show status (default repo)
-#   dotfiles-diff.sh --repo hyprdots        — use hyprdots repo
-#   dotfiles-diff.sh --repo shell-scripts   — use shell-scripts repo
-#   dotfiles-diff.sh --diff                 — show full diff
-#   dotfiles-diff.sh --sync                 — sync changes to repo
+#   git-diff.sh                                  — show status (default repo)
+#   git-diff.sh --repo or -r <repository>        — use hyprdots repo
+#   git-diff.sh --diff or -d                     — show full diff
+#   git-diff.sh --sync or -s                     — sync changes to repo
 
 # Re-exec as root to avoid per-call sudo overhead
 if [[ $EUID -ne 0 ]]; then
@@ -31,10 +30,19 @@ SYNC=false
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --repo) REPO_NAME="$2"; shift 2 ;;
-    --diff) SHOW_DIFF=true; shift ;;
-    --sync) SYNC=true; shift ;;
-    *) shift ;;
+  --repo | -r)
+    REPO_NAME="$2"
+    shift 2
+    ;;
+  --diff | -d)
+    SHOW_DIFF=true
+    shift
+    ;;
+  --sync | -s)
+    SYNC=true
+    shift
+    ;;
+  *) shift ;;
   esac
 done
 
@@ -46,40 +54,40 @@ if [[ ! -d "$DOTFILES/.git" ]]; then
 fi
 
 # -------------------------------------------------------
-# Маппинги для каждого репо
+# Mappings for each repository
 # -------------------------------------------------------
 declare -A ROOTS
 declare -A FILES
 
 case "$REPO_NAME" in
-  dotfiles|hyprdots)
-    ROOTS=(
-      [".config"]="$USER_HOME/.config"
-      [".local"]="$USER_HOME/.local"
-      [".themes"]="$USER_HOME/.themes"
-      ["bin"]="$USER_HOME/bin"
-      ["usr"]="/usr"
-      ["etc"]="/etc"
-    )
-    FILES=(
-      [".bashrc"]="$USER_HOME/.bashrc"
-    )
-    ;;
-  shell-scripts)
-    ROOTS=(
-      ["bin"]="$USER_HOME/bin"
-      ["bash"]="$USER_HOME/apps/shell-scripts"
-      ["fish"]="$USER_HOME/.config/fish/functions"
-    )
-    ;;
-  *)
-    echo -e "${RED}error: unknown repo '$REPO_NAME'${NC}"
-    echo -e "available: dotfiles, hyprdots, shell-scripts"
-    exit 1
-    ;;
+dotfiles | hyprdots)
+  ROOTS=(
+    [".config"]="$USER_HOME/.config"
+    [".local"]="$USER_HOME/.local"
+    [".themes"]="$USER_HOME/.themes"
+    ["bin"]="$USER_HOME/bin"
+    ["usr"]="/usr"
+    ["etc"]="/etc"
+  )
+  FILES=(
+    [".bashrc"]="$USER_HOME/.bashrc"
+  )
+  ;;
+shell-scripts)
+  ROOTS=(
+    ["bin"]="$USER_HOME/bin"
+    ["bash"]="$USER_HOME/apps/shell-scripts"
+    ["fish"]="$USER_HOME/.config/fish/functions"
+  )
+  ;;
+*)
+  echo -e "${RED}error: unknown repo '$REPO_NAME'${NC}"
+  echo -e "available: dotfiles, hyprdots, shell-scripts"
+  exit 1
+  ;;
 esac
 
-# Папки/файлы которые существуют только в репо — не проверять
+# Ignore paths to avoid missing errors
 IGNORE_PATHS=(
   "$DOTFILES/preview"
   "$DOTFILES/wallpapers"
@@ -92,7 +100,7 @@ echo -e "${BOLD}=== dotfiles diff ===${NC}"
 echo -e "repo: ${CYAN}$DOTFILES${NC}\n"
 
 # -------------------------------------------------------
-# Сравнение одного файла
+# Difference in file
 # -------------------------------------------------------
 check_file() {
   local REPO_FILE="$1"
@@ -106,7 +114,7 @@ check_file() {
 }
 
 # -------------------------------------------------------
-# Обход репозитория
+# Repository check
 # -------------------------------------------------------
 for REPO_REL in "${!ROOTS[@]}"; do
   REPO_ROOT="$DOTFILES/$REPO_REL"
@@ -132,7 +140,7 @@ for FILE_REL in "${!FILES[@]}"; do
 done
 
 # -------------------------------------------------------
-# Вывод изменённых
+# Display modified
 # -------------------------------------------------------
 if [[ ${#CHANGED[@]} -gt 0 ]]; then
   echo -e "${YELLOW}${BOLD}modified:${NC}"
@@ -152,7 +160,7 @@ else
 fi
 
 # -------------------------------------------------------
-# Вывод отсутствующих
+# Display missing
 # -------------------------------------------------------
 if [[ ${#MISSING_IN_SYSTEM[@]} -gt 0 ]]; then
   echo -e "${RED}${BOLD}missing in system:${NC}"
@@ -172,12 +180,12 @@ for REPO_REL in "${!ROOTS[@]}"; do
   REPO_ROOT="$DOTFILES/$REPO_REL"
   [[ ! -d "$REPO_ROOT" ]] && continue
   COUNT=$(find "$REPO_ROOT" -type f 2>/dev/null | wc -l)
-  TOTAL_FILES=$(( TOTAL_FILES + COUNT ))
+  TOTAL_FILES=$((TOTAL_FILES + COUNT))
 done
 for FILE_REL in "${!FILES[@]}"; do
-  [[ -f "$DOTFILES/$FILE_REL" ]] && TOTAL_FILES=$(( TOTAL_FILES + 1 ))
+  [[ -f "$DOTFILES/$FILE_REL" ]] && TOTAL_FILES=$((TOTAL_FILES + 1))
 done
-SYNCED=$(( TOTAL_FILES - ${#CHANGED[@]} - ${#MISSING_IN_SYSTEM[@]} ))
+SYNCED=$((TOTAL_FILES - ${#CHANGED[@]} - ${#MISSING_IN_SYSTEM[@]}))
 
 echo -e "${BOLD}━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━${NC}"
 echo -e "${BOLD}  $REPO_NAME / status${NC}"
@@ -253,5 +261,5 @@ if $SYNC; then
     done
   fi
 
-  echo -e "\n${GREEN}done. run sync-dotfiles.sh to push${NC}"
+  echo -e "\n${GREEN}done. run git-push.sh to push${NC}"
 fi

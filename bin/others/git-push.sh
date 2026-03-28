@@ -1,10 +1,9 @@
 #!/bin/bash
-# ~/bin/push-dots.sh
+# ~/bin/git-dots.sh
 # Usage:
-#   push-dots.sh                    — push dotfiles (default)
-#   push-dots.sh --hyprdots         — push hyprdots
-#   push-dots.sh --shell-scripts    — push shell-scripts
-#   push-dots.sh --repo <name>      — push any repo
+#   git-push.sh                             — push dotfiles (default)
+#   git-push.sh --repo or -r <repository>   — push changes to selected repo name
+#   git push.sh --<repository>              — push changes to selected repo name
 
 USER_HOME="/home/black"
 REPOS_BASE="$USER_HOME/git/personal"
@@ -13,11 +12,23 @@ LOG="$USER_HOME/.cache/log/cron.log"
 
 while [[ $# -gt 0 ]]; do
   case "$1" in
-    --repo|-r)       REPO_NAME="$2"; shift 2 ;;
-    --dotfiles)      REPO_NAME="dotfiles"; shift ;;
-    --hyprdots)      REPO_NAME="hyprdots"; shift ;;
-    --shell-scripts) REPO_NAME="shell-scripts"; shift ;;
-    *) shift ;;
+  --repo | -r)
+    REPO_NAME="$2"
+    shift 2
+    ;;
+  --dotfiles)
+    REPO_NAME="dotfiles"
+    shift
+    ;;
+  --hyprdots)
+    REPO_NAME="hyprdots"
+    shift
+    ;;
+  --shell-scripts)
+    REPO_NAME="shell-scripts"
+    shift
+    ;;
+  *) shift ;;
   esac
 done
 
