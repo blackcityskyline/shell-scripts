@@ -1,0 +1,10 @@
+#!/bin/bash
+CONFIG="$HOME/.config/hypr/config/misc.conf"
+if grep -q "direct_scanout = true" "$CONFIG"; then
+  sed -i 's/direct_scanout = true/direct_scanout = false/' "$CONFIG"
+  notify-send "Hyprland" "direct_scanout disabled (fullscreen fix ON)"
+else
+  sed -i 's/direct_scanout = false/direct_scanout = true/' "$CONFIG"
+  notify-send "Hyprland" "direct_scanout enabled (fullscreen fix OFF)"
+fi
+hyprctl reload
