@@ -1,0 +1,15 @@
+#!/usr/bin/env bash
+# Capslock OSD watcher
+# Using udev rules is better alternative
+
+LED=$(find /sys/class/leds -name '*capslock*' | head -1)/brightness
+prev=$(cat "$LED")
+
+while true; do
+  cur=$(cat "$LED")
+  if [[ "$cur" != "$prev" ]]; then
+    swayosd-client --caps-lock
+    prev="$cur"
+  fi
+  sleep 0.2
+done

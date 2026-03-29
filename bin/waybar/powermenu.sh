@@ -1,25 +1,30 @@
 #!/usr/bin/env bash
-# ~/.config/waybar/scripts/powermenu.sh
+# Power menu for Waybar
 
-show_menu() {
-  if command -v wlogout &>/dev/null; then
-    wlogout --protocol layer-shell --buttons-per-row 5
-  elif command -v rofi &>/dev/null; then
-    chosen=$(echo -e " Lock\n󰌾 Logout\n󰒲 Suspend\n󰜉 Reboot\n⏻ Shutdown" |
-      rofi -dmenu -i -p "Power Menu:" -theme-str '* { font: "JetBrains Mono 12"; }')
+SWAYLOCK_ARGS=(-f -c 000000)
 
-    case "$chosen" in
-    *Lock) swaylock -f -c 000000 ;;
-    *Logout) hyprctl dispatch exit ;;
-    *Suspend) systemctl suspend ;;
-    *Reboot) systemctl reboot ;;
-    *Shutdown) systemctl poweroff ;;
-    esac
-  else
-    # Fallback to simple notification
-    notify-send "Power Menu" "Install wlogout or rofi for power menu"
-  fi
+run_wlogout() {
+  wlogout -b 5 -m 304 --margin-left 283 --margin-right 283
 }
 
-# Execute menu
-show_menu
+run_rofi() {
+  local chosen
+  chosen=$(printf " Lock\n󰌾 Logout\n󰒲 Suspend\n󰜉 Reboot\n⏻ Shutdown" |
+    rofi -dmenu -i -p "Power Menu:" -theme-str '* { font: "JetBrains Mono 12"; }')
+
+  case "$chosen" in
+  *Lock) swaylock "${SWAYLOCK_ARGS[@]}" ;;
+  *Logout) hyprctl dispatch exit ;;
+  *Suspend) systemctl suspend ;;
+  *Reboot) systemctl reboot ;;
+  *Shutdown) systemctl poweroff ;;
+  esac
+}
+
+if command -v wlogout &>/dev/null; then
+  run_wlogout
+elif command -v rofi &>/dev/null; then
+  run_rofi
+else
+  notify-send "Power Menu" "Install wlogout or rofi"
+fi

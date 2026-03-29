@@ -3,53 +3,41 @@
 player_status=$(playerctl --player=kew,playerctld,%any status 2>/dev/null)
 
 if [ "$player_status" = "Playing" ] || [ "$player_status" = "Paused" ]; then
-  artist=$(playerctl --player=kew,playerctld,%any metadata artist 2>/dev/null || echo "") # Unknow Arist
-  title=$(playerctl --player=kew,playerctld,%any metadata title 2>/dev/null || echo "hmmm?")
+  artist=$(playerctl --player=kew,playerctld,%any metadata artist 2>/dev/null || echo "")
+  title=$(playerctl --player=kew,playerctld,%any metadata title 2>/dev/null || echo "?")
 
-  # Убираем кавычки и лишние символы
-  artist=$(echo "$artist" | sed 's/["'\'']//g' | xargs)
-  title=$(echo "$title" | sed 's/["'\'']//g' | xargs)
+  # strip quotes and extra whitespace
+  artist=$(echo "$artist" | sed 's/["'"'"']//g' | xargs)
+  title=$(echo "$title" | sed 's/["'"'"']//g' | xargs)
 
-  # Формируем полный текст
+  # build full text
   if [ -z "$artist" ]; then
     full_text="$title"
   else
     full_text="$artist - $title"
   fi
 
-  # Определяем максимальную длину для отображения (примерно 20 символов)
   MAX_LENGTH=20
 
-  # Если текст короче или равен максимальной длине, оставляем как есть
   if [ ${#full_text} -le $MAX_LENGTH ]; then
     display_text="$full_text"
   else
-    # Создаем эффект бегущей строки
-    # Используем текущее время для создания смещения
+    # scrolling text — shift by 1 char per second
     current_time=$(date +%s)
-
-    # Создаем длинную строку с разделителем для плавной анимации
     separator=" • "
     extended_text="$full_text$separator$full_text"
-
-    # Вычисляем позицию в длинной строке (циклично)
     text_length=${#full_text}
-    extended_length=${#extended_text}
-
-    # Смещение меняется с течением времени (1 символ в секунду)
     offset=$((current_time % (text_length + ${#separator})))
-
-    # Берем подстроку из расширенного текста
     display_text="${extended_text:offset:MAX_LENGTH}"
 
-    # Если строка короче MAX_LENGTH, добавляем начало
+    # wrap around if substring is shorter than max
     if [ ${#display_text} -lt $MAX_LENGTH ]; then
       remaining=$((MAX_LENGTH - ${#display_text}))
       display_text="$display_text${extended_text:0:remaining}"
     fi
   fi
 
-  # Для обрезанного отображения (как было ранее)
+  # truncated variants for short display
   if [ ${#artist} -gt 10 ]; then
     artist_short="${artist:0:10}…"
   else
@@ -73,7 +61,6 @@ if [ "$player_status" = "Playing" ] || [ "$player_status" = "Paused" ]; then
     icon=""
   fi
 
-  # Используем display_text для бегущей строки, но в JSON
   echo "{\"text\": \"$icon $display_text\", \"class\": \"$player_status\", \"tooltip\": \"$artist - $title\\nClick: Play/Pause | Scroll: Next/Prev\"}"
 else
   echo "{\"text\": \"\", \"class\": \"stopped\", \"tooltip\": \"No active media player\"}"

@@ -1,138 +1,99 @@
 #!/usr/bin/env bash
+# CPU, temperature, RAM and disk monitor for Waybar
 
-# CPU, Temperature, RAM and Disk monitor for Waybar
-
-# Configuration
-CPU_UPDATE_INTERVAL=1 # seconds for CPU usage calculation
 PREV_STAT_FILE="/tmp/cpu_stat_prev"
 
-# Get CPU usage (accurate calculation over interval)
 get_cpu_usage() {
-  # Read current CPU stats
-  read -r cpu user nice system idle iowait irq softirq steal guest guest_nice <<<"$(grep '^cpu ' /proc/stat)"
+  read -r _ user nice system idle iowait irq softirq steal _ _ <<<"$(grep '^cpu ' /proc/stat)"
 
-  # Calculate total and idle time
-  total_current=$((user + nice + system + idle + iowait + irq + softirq + steal))
-  idle_current=$((idle + iowait))
+  local total=$((user + nice + system + idle + iowait + irq + softirq + steal))
+  local idle_now=$((idle + iowait))
 
-  # Try to read previous values
   if [[ -f "$PREV_STAT_FILE" ]]; then
     read -r total_prev idle_prev <"$PREV_STAT_FILE"
-
-    # Calculate difference
-    total_diff=$((total_current - total_prev))
-    idle_diff=$((idle_current - idle_prev))
-
-    # Calculate usage percentage (целое число)
-    if [[ $total_diff -gt 0 ]]; then
-      cpu_usage=$((100 * (total_diff - idle_diff) / total_diff))
-      printf "%d" "$cpu_usage"
-    else
-      echo "0"
-    fi
+    local dtotal=$((total - total_prev))
+    local didle=$((idle_now - idle_prev))
+    [[ $dtotal -gt 0 ]] && printf "%d" $((100 * (dtotal - didle) / dtotal)) || echo "0"
   else
-    # First run, no previous data
     echo "0"
   fi
 
-  # Save current values for next run
-  echo "$total_current $idle_current" >"$PREV_STAT_FILE"
+  echo "$total $idle_now" >"$PREV_STAT_FILE"
 }
 
-# Get CPU temperature
 get_temp() {
-  # Try multiple temperature sources
-  local temp sources
+  local cpu_drivers=("coretemp" "k10temp" "zenpower")
 
-  # Common temperature sources
-  sources=(
-    "/sys/class/thermal/thermal_zone0/temp"
-    "/sys/class/thermal/thermal_zone1/temp"
-    "/sys/class/hwmon/hwmon0/temp1_input"
-    "/sys/class/hwmon/hwmon1/temp1_input"
-    "/sys/class/hwmon/hwmon2/temp1_input"
-    "/sys/devices/platform/coretemp.0/hwmon/hwmon*/temp1_input"
-  )
-
-  for source in "${sources[@]}"; do
-    # Expand glob patterns
-    for file in $source; do
-      if [[ -f "$file" ]]; then
-        temp=$(cat "$file" 2>/dev/null)
-        if [[ -n "$temp" && "$temp" -gt 0 ]]; then
-          echo $((temp / 1000))
-          return 0
-        fi
-      fi
+  for hwmon in /sys/class/hwmon/hwmon*; do
+    local name
+    name=$(cat "$hwmon/name" 2>/dev/null)
+    local is_cpu=false
+    for driver in "${cpu_drivers[@]}"; do
+      [[ "$name" == "$driver" ]] && is_cpu=true && break
     done
+    $is_cpu || continue
+
+    local file="$hwmon/temp1_input"
+    [[ -f "$file" ]] || continue
+    local temp
+    temp=$(cat "$file" 2>/dev/null)
+    [[ -n "$temp" && "$temp" -gt 0 ]] && echo $((temp / 1000)) && return
+  done
+
+  # Fallback: ACPI thermal zone
+  for file in /sys/class/thermal/thermal_zone*/temp; do
+    [[ -f "$file" ]] || continue
+    local type zone
+    zone=$(dirname "$file")
+    type=$(cat "$zone/type" 2>/dev/null)
+    [[ "$type" == "x86_pkg_temp" || "$type" == "cpu-thermal" ]] || continue
+    local temp
+    temp=$(cat "$file" 2>/dev/null)
+    [[ -n "$temp" && "$temp" -gt 0 ]] && echo $((temp / 1000)) && return
   done
 
   echo "0"
 }
 
-# Get RAM usage
 get_ram() {
-  # Use free in bytes for more accuracy
   read -r total used _ <<<"$(free -b | awk '/^Mem:/ {print $2, $3}')"
-
-  # Convert to GB with 1 decimal place
-  total_gb=$(echo "scale=1; $total / 1073741824" | bc)
+  local used_gb total_gb percent=0
   used_gb=$(echo "scale=1; $used / 1073741824" | bc)
-
-  # Calculate percentage (целое число)
-  if [[ $total -gt 0 ]]; then
-    percent=$((100 * used / total))
-  else
-    percent=0
-  fi
-
+  total_gb=$(echo "scale=1; $total / 1073741824" | bc)
+  [[ $total -gt 0 ]] && percent=$((100 * used / total))
   echo "$used_gb $total_gb $percent"
 }
 
-# Get Disk usage
 get_disk() {
-  # Use df with bytes for consistency
-  read -r used_bytes total_bytes percent <<<"$(df -B1 / --output=used,size,pcent 2>/dev/null | tail -1 | tr -d '%')"
-
-  # Convert to GB
+  read -r used_bytes total_bytes percent \
+    <<<"$(df -B1 / --output=used,size,pcent 2>/dev/null | tail -1 | tr -d '%')"
+  local used_gb total_gb
   used_gb=$(echo "scale=1; $used_bytes / 1073741824" | bc)
   total_gb=$(echo "scale=1; $total_bytes / 1073741824" | bc)
-
   echo "$used_gb $total_gb $percent"
 }
 
-# Main execution
-cpu_percent=$(get_cpu_usage)
+# --- main ---
+
+cpu=$(get_cpu_usage)
 temp=$(get_temp)
-read -r ram_used ram_total ram_percent <<<"$(get_ram)"
-read -r disk_used disk_total disk_percent <<<"$(get_disk)"
+read -r ram_used ram_total ram_pct <<<"$(get_ram)"
+read -r disk_used disk_total disk_pct <<<"$(get_disk)"
 
-# Format display
-if [[ "$temp" == "0" ]]; then
-  display="${cpu_percent}%"
-else
-  display="${temp}°C ${cpu_percent}%"
-fi
+[[ "$temp" == "0" ]] && display="${cpu}%" || display="${temp}°C ${cpu}%"
 
-# Determine class with proper thresholds
 class="normal"
-
-# Critical: CPU temp > 80°C or CPU usage > 95% or RAM > 95% or Disk > 95%
-if [[ $temp -gt 80 ]] || [[ $cpu_percent -gt 95 ]] || [[ $ram_percent -gt 95 ]] || [[ $disk_percent -gt 95 ]]; then
+if [[ $temp -gt 80 || $cpu -gt 95 || $ram_pct -gt 95 || $disk_pct -gt 95 ]]; then
   class="critical"
-# Warning: CPU temp > 70°C or CPU usage > 80% or RAM > 85% or Disk > 85%
-elif [[ $temp -gt 70 ]] || [[ $cpu_percent -gt 80 ]] || [[ $ram_percent -gt 85 ]] || [[ $disk_percent -gt 85 ]]; then
+elif [[ $temp -gt 70 || $cpu -gt 80 || $ram_pct -gt 85 || $disk_pct -gt 85 ]]; then
   class="warning"
 fi
 
-# Clean up values for display (remove trailing .0)
-ram_used_clean=${ram_used%.0}
-ram_total_clean=${ram_total%.0}
-disk_used_clean=${disk_used%.0}
-disk_total_clean=${disk_total%.0}
+ram_used=${ram_used%.0}
+ram_total=${ram_total%.0}
+disk_used=${disk_used%.0}
+disk_total=${disk_total%.0}
 
-# Format tooltip
-tooltip="CPU: ${cpu_percent}% \nTemp: ${temp}°C \nRAM: ${ram_used_clean}/${ram_total_clean} GB (${ram_percent}%) \nDisk: ${disk_used_clean}/${disk_total_clean} GB (${disk_percent}%)"
+tooltip="CPU: ${cpu}%\nTemp: ${temp}°C\nRAM: ${ram_used}/${ram_total} GB (${ram_pct}%)\nDisk: ${disk_used}/${disk_total} GB (${disk_pct}%)"
 
-# Output JSON
 echo "{\"text\": \"$display\", \"class\": \"$class\", \"tooltip\": \"$tooltip\"}"

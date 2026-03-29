@@ -1,4 +1,8 @@
 #!/bin/bash
+
+# Disable direct_scanout feature to avoid video server freezes,
+# while using some fullsceen apps and enable while playing games
+
 CONFIG="$HOME/.config/hypr/config/misc.conf"
 if grep -q "direct_scanout = true" "$CONFIG"; then
   sed -i 's/direct_scanout = true/direct_scanout = false/' "$CONFIG"

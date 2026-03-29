@@ -1,434 +1,200 @@
 #!/usr/bin/env bash
+# System update manager for Arch Linux / Waybar
 
-# System update script for Arch Linux with Waybar integration
-# Displays update counts and allows launching update process in terminal
+[[ -f /etc/arch-release ]] || exit 0
 
-# Check if running on Arch Linux
-if [ ! -f /etc/arch-release ]; then
-  exit 0
-fi
+# --- config ---
 
-# Function to check if a package is installed
+TITLE="Arch Linux Update"
+TERMINALS=(kitty alacritty foot gnome-terminal xterm)
+
+ASCII_ART='
+  ▄▄▄· ▄▄▄   ▄▄·  ▄ .▄
+ ▐█ ▀█ ▀▄ █·▐█ ▌▪██▪▐█
+ ▄█▀▀█ ▐▀▀▄ ██ ▄▄██▀▐█
+ ▐█ ▪▐▌▐█•█▌▐███▌██▌▐▀
+  ▀  ▀ .▀  ▀·▀▀▀ ▀▀▀ ·
+  ┬ ┬┌─┐┌┬┐┌─┐┌┬┐┌─┐
+  │ │├─┘ ││├─┤ │ ├┤
+  └─┘┴  ─┴┘┴ ┴ ┴ └─┘
+'
+
+# --- helpers ---
+
 pkg_installed() {
-  local pkg=$1
-
-  # Check via pacman
-  if pacman -Qi "${pkg}" &>/dev/null; then
-    return 0
-  # Check via flatpak
-  elif pacman -Qi "flatpak" &>/dev/null && flatpak info "${pkg}" &>/dev/null; then
-    return 0
-  # Check if command exists
-  elif command -v "${pkg}" &>/dev/null; then
-    return 0
-  else
-    return 1
-  fi
+  pacman -Qi "$1" &>/dev/null || command -v "$1" &>/dev/null
 }
 
-# Function to detect available AUR helper
+cargo_ok() {
+  command -v cargo &>/dev/null && cargo --version &>/dev/null
+}
+
 get_aur_helper() {
   if pkg_installed yay; then
-    aur_helper="yay"
+    echo "yay"
   elif pkg_installed paru; then
-    aur_helper="paru"
+    echo "paru"
+  fi
+}
+
+open_terminal() {
+  local cmd="\"$0\" _run"
+  for term in "${TERMINALS[@]}"; do
+    command -v "$term" &>/dev/null || continue
+    case "$term" in
+    kitty) kitty --title "$TITLE" sh -c "$cmd" ;;
+    alacritty) alacritty --title "$TITLE" -e sh -c "$cmd" ;;
+    foot) foot --title "$TITLE" sh -c "$cmd" ;;
+    gnome-terminal) gnome-terminal --title="$TITLE" -- sh -c "$cmd" ;;
+    xterm) xterm -title "$TITLE" -e sh -c "$cmd" ;;
+    esac
+    return
+  done
+  notify-send "$TITLE" "No terminal emulator found (install kitty, alacritty, etc.)"
+}
+
+# --- update counts ---
+# Sets variables: official, aur, flatpak_n, cargo_n, total
+
+count_updates() {
+  local aur_helper
+  aur_helper=$(get_aur_helper)
+
+  official=$(checkupdates 2>/dev/null | wc -l)
+  aur=0
+  flatpak_n=0
+  cargo_n=0
+
+  [[ -n "$aur_helper" ]] && aur=$("$aur_helper" -Qua 2>/dev/null | wc -l)
+
+  pkg_installed flatpak &&
+    flatpak_n=$(flatpak remote-ls --updates 2>/dev/null | wc -l)
+
+  if cargo_ok && cargo install-update --help &>/dev/null 2>&1; then
+    cargo_n=$(cargo install-update -a --list 2>/dev/null | grep -c "Yes")
+  fi
+
+  total=$((official + aur + flatpak_n + cargo_n))
+}
+
+# --- modes ---
+
+mode_check() {
+  # Quick JSON output for Waybar
+  count_updates
+  local aur_helper tooltip
+  aur_helper=$(get_aur_helper)
+  tooltip="Pacman: $official\nAUR (${aur_helper:-none}): $aur\nFlatpak: $flatpak_n\nCargo: $cargo_n\n\nTotal: $total"
+
+  if [[ $total -eq 0 ]]; then
+    echo '{"text": "󰣇", "tooltip": "All packages up to date"}'
   else
-    aur_helper=""
+    echo "{\"text\": \"󰣇 $total\", \"tooltip\": \"${tooltip//\"/\\\"}\", \"class\": \"updates\"}"
   fi
 }
 
-# Function to check if cargo is installed and working
-cargo_installed() {
-  if command -v cargo &>/dev/null; then
-    # Check if cargo works (not just broken symlink)
-    if cargo --version &>/dev/null; then
-      return 0
-    fi
-  fi
-  return 1
-}
-
-# Function to display ASCII art
-display_ascii_art() {
-  echo ""
-  echo "  ▄▄▄· ▄▄▄   ▄▄·  ▄ .▄ "
-  echo " ▐█ ▀█ ▀▄ █·▐█ ▌▪██▪▐█ "
-  echo " ▄█▀▀█ ▐▀▀▄ ██ ▄▄██▀▐█ "
-  echo " ▐█ ▪▐▌▐█•█▌▐███▌██▌▐▀ "
-  echo "  ▀  ▀ .▀  ▀·▀▀▀ ▀▀▀ · "
-  echo "  ┬ ┬┌─┐┌┬┐┌─┐┌┬┐┌─┐ "
-  echo "  │ │├─┘ ││├─┤ │ ├┤  "
-  echo "  └─┘┴  ─┴┘┴ ┴ ┴ └─┘ "
-  echo ""
-  echo "🔍 Checking... "
-  echo ""
-}
-
-# Export functions for use in subshells
-export -f pkg_installed
-export -f get_aur_helper
-export -f cargo_installed
-
-# Main script logic
-case "$1" in
-"up")
-  # Handle click: open terminal with update process
+mode_up() {
+  # Open terminal; signal Waybar to refresh on exit
   trap 'pkill -RTMIN+20 waybar' EXIT
+  open_terminal
+}
 
-  # Build the update command
-  update_command='
-      # Clear screen for better visibility
-      clear
-      
-      # Re-export functions in subshell
-      pkg_installed() {
-        local pkg="$1"
-        if pacman -Qi "${pkg}" &>/dev/null; then
-          return 0
-        elif pacman -Qi "flatpak" &>/dev/null && flatpak info "${pkg}" &>/dev/null; then
-          return 0
-        elif command -v "${pkg}" &>/dev/null; then
-          return 0
-        else
-          return 1
-        fi
-      }
-     
-      get_aur_helper() {
-        if pkg_installed yay; then
-          aur_helper="yay"
-        elif pkg_installed paru; then
-          aur_helper="paru"
-        else
-          aur_helper=""
-        fi
-      }
-      
-      cargo_installed() {
-        if command -v cargo &>/dev/null; then
-          if cargo --version &>/dev/null; then
-            return 0
-          fi
-        fi
-        return 1
-      }
+mode_run() {
+  # Interactive update session — runs inside the terminal
+  clear
+  printf "%s\n" "$ASCII_ART"
+  echo "🔍 Checking for updates..."
+  echo ""
 
-      # Display ascii
-      echo ""
-      echo "  ▄▄▄· ▄▄▄   ▄▄·  ▄ .▄ "
-      echo " ▐█ ▀█ ▀▄ █·▐█ ▌▪██▪▐█ "
-      echo " ▄█▀▀█ ▐▀▀▄ ██ ▄▄██▀▐█ "
-      echo " ▐█ ▪▐▌▐█•█▌▐███▌██▌▐▀ "
-      echo "  ▀  ▀ .▀  ▀·▀▀▀ ▀▀▀ · "
-      echo "  ┬ ┬┌─┐┌┬┐┌─┐┌┬┐┌─┐ "
-      echo "  │ │├─┘ ││├─┤ │ ├┤  "
-      echo "  └─┘┴  ─┴┘┴ ┴ ┴ └─┘ "
-      echo ""
-      echo "🔍 Checking... "
-      echo ""
+  count_updates
+  local aur_helper
+  aur_helper=$(get_aur_helper)
 
-      # Check official updates
-      official_updates=$(checkupdates 2>/dev/null | wc -l)
-      echo "📦 Official Arch updates: $official_updates"
-      
-      # Detect AUR helper
-      get_aur_helper
-      
-      # Check AUR updates if helper exists
-      if [ -n "$aur_helper" ]; then
-        aur_updates=$($aur_helper -Qua 2>/dev/null | wc -l)
-        echo "📦 AUR updates ($aur_helper): $aur_updates"
-      else
-        echo "📦 AUR updates: No helper found (install yay or paru)"
-      fi
-      
-      # Check flatpak updates
-      if pkg_installed flatpak; then
-        flatpak_updates=$(flatpak remote-ls --updates 2>/dev/null | wc -l)
-        if [ $flatpak_updates -gt 0 ]; then
-          echo "📦 Flatpak updates: $flatpak_updates"
-        else
-          echo "📦 Flatpak updates: 0 (up to date)"
-        fi
-      else
-        echo "📦 Flatpak updates: Not installed"
-      fi
-      
-      # Check cargo updates
-      if cargo_installed; then
-        # Check if cargo-install-update is available
-        if cargo install-update --help &>/dev/null 2>&1; then
-          cargo_updates=$(cargo install-update -a --list 2>/dev/null | grep -c "Yes")
-          if [ $cargo_updates -gt 0 ]; then
-            echo "📦 Cargo updates: $cargo_updates"
-          else
-            echo "📦 Cargo updates: 0 (up to date)"
-          fi
-        else
-          echo "📦 Cargo updates: cargo-update not installed"
-          echo "   Install with: cargo install cargo-update"
-        fi
-      else
-        echo "📦 Cargo updates: Not installed"
-      fi
-      
-      # Calculate total
-      total_updates=$((official_updates + aur_updates + flatpak_updates + cargo_updates))
-      echo ""
-      echo "📦 TOTAL UPDATES AVAILABLE: $total_updates"
-      echo ""
-      
-      if [ $total_updates -eq 0 ]; then
-        echo "✅ Already up to date!"
-        echo ""
-        read -n 1 -p "Press any key..."
-        exit 0
-      fi
-      
-      echo "🚀 Starting update process..."
-      echo ""
-      read -n 1 -p "Press Enter to begin updates or Ctrl+C to cancel..."
-      echo ""
-      
-      # Perform updates
-      if [ -n "$aur_helper" ]; then
-        echo "🔄 Running $aur_helper -Syu..."
-        echo "----------------------------------------"
-        $aur_helper -Syu --noconfirm
-      else
-        echo "🔄 Running sudo pacman -Syu..."
-        echo "----------------------------------------"
-        sudo pacman -Syu --noconfirm
-      fi
-      
-      if pkg_installed flatpak; then
-        echo ""
-        echo "🔄 Running flatpak update..."
-        echo "----------------------------------------"
-        flatpak update -y
-      fi
-      
-      if cargo_installed; then
-        if cargo install-update --help &>/dev/null 2>&1; then
-          echo ""
-          echo "🔄 Running cargo install-update -a..."
-          echo "----------------------------------------"
-          cargo install-update -a
-        fi
-      fi
-      
-      echo ""
-      echo "✅ UPDATE COMPLETE!"
-      echo ""
-      echo "System has been successfully updated."
-      echo ""
-      read -n 1 -p "Press any key..."
-    '
+  printf "📦 Pacman:  %s\n" "$official"
+  printf "📦 AUR:     %s (%s)\n" "$aur" "${aur_helper:-no helper}"
+  printf "📦 Flatpak: %s\n" "$flatpak_n"
+  printf "📦 Cargo:   %s\n" "$cargo_n"
+  echo "────────────────────────────────────────"
+  printf "📦 Total:   %s\n" "$total"
+  echo ""
 
-  # Try to launch in available terminal emulator
-  if command -v kitty &>/dev/null; then
-    kitty --title "Arch Linux System Update" sh -c "$update_command"
-  elif command -v alacritty &>/dev/null; then
-    alacritty --title "Arch Linux System Update" -e sh -c "$update_command"
-  elif command -v foot &>/dev/null; then
-    foot --title "Arch Linux System Update" sh -c "$update_command"
-  elif command -v gnome-terminal &>/dev/null; then
-    gnome-terminal --title="Arch Linux System Update" -- sh -c "$update_command"
-  elif command -v xterm &>/dev/null; then
-    xterm -title "Arch Linux System Update" -e "sh -c \"$update_command\""
-  else
-    # No terminal found, show error
-    notify-send "System Update Error" "No terminal emulator found (install kitty, alacritty, etc.)"
-  fi
-  exit 0
-  ;;
-
-"upgrade")
-  # Called from within terminal: show update counts and exit
-  get_aur_helper
-
-  # Check official updates
-  official_updates=$( (while pgrep -x checkupdates >/dev/null; do sleep 0.1; done) && checkupdates 2>/dev/null | wc -l)
-
-  # Check AUR updates
-  if [ -n "$aur_helper" ]; then
-    aur_updates=$(${aur_helper} -Qua 2>/dev/null | wc -l)
-  else
-    aur_updates=0
+  if [[ $total -eq 0 ]]; then
+    echo "✅ Already up to date!"
+    read -rn1 -p "Press any key..."
+    return
   fi
 
-  # Check flatpak updates
-  flatpak_status=""
+  read -rn1 -p "Press any key to update or Ctrl+C to cancel..."
+  echo ""
+
+  if [[ -n "$aur_helper" ]]; then
+    echo "🔄 $aur_helper -Syu"
+    echo "────────────────────────────────────────"
+    "$aur_helper" -Syu --noconfirm
+  else
+    echo "🔄 sudo pacman -Syu"
+    echo "────────────────────────────────────────"
+    sudo pacman -Syu --noconfirm
+  fi
+
   if pkg_installed flatpak; then
-    flatpak_updates=$(flatpak remote-ls --updates 2>/dev/null | wc -l)
-    flatpak_status="$flatpak_updates"
-  else
-    flatpak_updates=0
-    flatpak_status="not installed"
+    echo ""
+    echo "🔄 flatpak update"
+    echo "────────────────────────────────────────"
+    flatpak update -y
   fi
 
-  # Check cargo updates
-  cargo_status=""
-  cargo_updates=0
-  if cargo_installed; then
-    if cargo install-update --help &>/dev/null 2>&1; then
-      cargo_updates=$(cargo install-update -a --list 2>/dev/null | grep -c "Yes")
-      cargo_status="$cargo_updates"
-    else
-      cargo_status="no cargo-update"
-    fi
-  else
-    cargo_status="not installed"
+  if cargo_ok && cargo install-update --help &>/dev/null 2>&1; then
+    echo ""
+    echo "🔄 cargo install-update -a"
+    echo "────────────────────────────────────────"
+    cargo install-update -a
   fi
 
-  # Display ASCII art
-  display_ascii_art
-
-  # Display formatted output
-  printf "Official:  %-10s\n" "$official_updates"
-  printf "AUR:       %-10s" "$aur_updates"
-  if [ -n "$aur_helper" ]; then
-    printf " (%s)\n" "$aur_helper"
-  else
-    printf "\n"
-  fi
-  printf "Flatpak:   %-10s\n" "$flatpak_status"
-  printf "Cargo:     %-10s\n" "$cargo_status"
-
-  # Calculate and display total
-  total=$((official_updates + aur_updates + flatpak_updates + cargo_updates))
   echo ""
+  echo "✅ Done!"
+  read -rn1 -p "Press any key..."
+}
+
+mode_upgrade() {
+  # Detailed status output in terminal
+  count_updates
+  local aur_helper
+  aur_helper=$(get_aur_helper)
+
+  printf "%s\n" "$ASCII_ART"
+  printf "Pacman:   %s\n" "$official"
+  printf "AUR:      %s (%s)\n" "$aur" "${aur_helper:-no helper}"
+  printf "Flatpak:  %s\n" "$flatpak_n"
+  printf "Cargo:    %s\n" "$cargo_n"
   echo "════════════════════════════════════════"
-  printf "TOTAL:     %-10s\n" "$total"
+  printf "Total:    %s\n" "$total"
   echo "════════════════════════════════════════"
+}
 
-  exit 0
-  ;;
-
-"check")
-  # Quick check for Waybar (используется в новом конфиге)
-  get_aur_helper
-
-  # Check official updates
-  official_updates=$(checkupdates 2>/dev/null | wc -l)
-
-  # Check AUR updates
-  if [ -n "$aur_helper" ]; then
-    aur_updates=$(${aur_helper} -Qua 2>/dev/null | wc -l)
-  else
-    aur_updates=0
-  fi
-
-  # Check flatpak updates
-  if pkg_installed flatpak; then
-    flatpak_updates=$(flatpak remote-ls --updates 2>/dev/null | wc -l)
-  else
-    flatpak_updates=0
-  fi
-
-  # Check cargo updates
-  cargo_updates=0
-  if cargo_installed; then
-    if cargo install-update --help &>/dev/null 2>&1; then
-      cargo_updates=$(cargo install-update -a --list 2>/dev/null | grep -c "Yes")
-    fi
-  fi
-
-  total_updates=$((official_updates + aur_updates + flatpak_updates + cargo_updates))
-
-  # Prepare tooltip text
-  tooltip="Pacman: $official_updates\nAUR: $aur_updates\nFlatpak: $flatpak_updates\nCargo: $cargo_updates"
-
-  # Output JSON for Waybar
-  if [ $total_updates -eq 0 ]; then
-    echo "{\"text\": \"󰣇\", \"tooltip\": \"${tooltip//\"/\\\"}\"}"
-  else
-    echo "{\"text\": \"󰣇\", \"tooltip\": \"${tooltip//\"/\\\"}\", \"class\": \"updates\"}"
-  fi
-  exit 0
-  ;;
-
-"")
-  # No args: show interactive menu
-  echo ""
-  echo "  ▄▄▄· ▄▄▄   ▄▄·  ▄ .▄ "
-  echo " ▐█ ▀█ ▀▄ █·▐█ ▌▪██▪▐█ "
-  echo " ▄█▀▀█ ▐▀▀▄ ██ ▄▄██▀▐█ "
-  echo " ▐█ ▪▐▌▐█•█▌▐███▌██▌▐▀ "
-  echo "  ▀  ▀ .▀  ▀·▀▀▀ ▀▀▀ · "
-  echo ""
-  echo "  1) check    — show update counts"
+mode_menu() {
+  printf "%s\n" "$ASCII_ART"
+  echo "  1) check    — Waybar status"
   echo "  2) up       — run updates"
   echo "  3) upgrade  — detailed status"
   echo "  4) exit"
   echo ""
-  read -p "  > " choice
+  read -rp "  > " choice
   echo ""
   case "$choice" in
-    1|check)   exec "$0" check ;;
-    2|up)      exec "$0" up ;;
-    3|upgrade) exec "$0" upgrade ;;
-    *)         exit 0 ;;
+  1 | check) exec "$0" check ;;
+  2 | up) mode_run ;;          # уже в терминале — запускаем напрямую
+  3 | upgrade) mode_upgrade ;; # то же самое
   esac
-  ;;
+}
 
-*)
-  # Default: output JSON for Waybar (старый формат для совместимости)
-  get_aur_helper
+# --- dispatch ---
 
-  # Check for AUR updates
-  if [ -n "$aur_helper" ]; then
-    aur_updates=$(${aur_helper} -Qua 2>/dev/null | wc -l)
-  else
-    aur_updates=0
-  fi
-
-  # Check for official repository updates
-  official_updates=$( (while pgrep -x checkupdates >/dev/null; do sleep 0.1; done) && checkupdates 2>/dev/null | wc -l)
-
-  # Check for Flatpak updates
-  flatpak_info=""
-  if pkg_installed flatpak; then
-    flatpak_updates=$(flatpak remote-ls --updates 2>/dev/null | wc -l)
-    flatpak_info="$flatpak_updates"
-  else
-    flatpak_updates=0
-    flatpak_info="not installed"
-  fi
-
-  # Check for Cargo updates
-  cargo_info=""
-  cargo_updates=0
-  if cargo_installed; then
-    if cargo install-update --help &>/dev/null 2>&1; then
-      cargo_updates=$(cargo install-update -a --list 2>/dev/null | grep -c "Yes")
-      cargo_info="$cargo_updates"
-    else
-      cargo_info="no cargo-update"
-    fi
-  else
-    cargo_info="not installed"
-  fi
-
-  # Calculate total available updates
-  total_updates=$((official_updates + aur_updates + flatpak_updates + cargo_updates))
-
-  # Prepare tooltip text
-  tooltip="Pacman: $official_updates"
-  if [ -n "$aur_helper" ]; then
-    tooltip="$tooltip\nAUR ($aur_helper): $aur_updates"
-  else
-    tooltip="$tooltip\nAUR: $aur_updates"
-  fi
-  tooltip="$tooltip\nFlatpak: $flatpak_info"
-  tooltip="$tooltip\nCargo: $cargo_info"
-  tooltip="$tooltip\n\nTotal: $total_updates"
-
-  # Output JSON for Waybar
-  if [ $total_updates -eq 0 ]; then
-    echo "{\"text\":\"󰣇\", \"tooltip\":\"All packages are up to date\"}"
-  else
-    echo "{\"text\":\"󰣇\", \"tooltip\":\"${tooltip//\"/\\\"}\", \"class\": \"updates\"}"
-  fi
-  ;;
+case "$1" in
+check) mode_check ;;
+up) mode_up ;;
+_run) mode_run ;;
+upgrade) mode_upgrade ;;
+"") mode_menu ;;
+*) mode_check ;;
 esac

@@ -1,16 +1,17 @@
-#!/bin/bash
+#!/usr/bin/env bash
+# Media player status for Waybar
 
-player_status=$(playerctl --player=kew,playerctld,%any status 2>/dev/null)
+PLAYER="kew,playerctld,%any"
+MAX_LENGTH=20
 
-if [[ "$player_status" == "Playing" || "$player_status" == "Paused" ]]; then
-	title=$(playerctl --player=kew,playerctld,%any metadata title 2>/dev/null)
-	artist=$(playerctl --player=kew,playerctld,%any metadata artist 2>/dev/null)
+status=$(playerctl --player="$PLAYER" status 2>/dev/null)
 
-	text="${title} – ${artist}"
-	max_length=20
-	[[ ${#text} -gt $max_length ]] && text="${text:0:$max_length}..."
-
-	echo " $text"
+if [[ "$status" == "Playing" || "$status" == "Paused" ]]; then
+  title=$(playerctl --player="$PLAYER" metadata title 2>/dev/null)
+  artist=$(playerctl --player="$PLAYER" metadata artist 2>/dev/null)
+  text="${title} – ${artist}"
+  [[ ${#text} -gt $MAX_LENGTH ]] && text="${text:0:$MAX_LENGTH}..."
+  echo " $text"
 else
-	echo ""
+  echo ""
 fi

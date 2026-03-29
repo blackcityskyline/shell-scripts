@@ -1,179 +1,143 @@
-#!/bin/bash
-# Запись экрана с системным звуком + микрофон (опционально)
-# Зависимости: wf-recorder, slurp, pactl
+#!/usr/bin/env bash
+# Screen recorder for Wayland / X11
 
 OUTPUT="$HOME/Videos/screencast-$(date +%Y%m%d-%H%M%S).mp4"
+COMBINED_SINK=""
+LOOPBACK_MODULES=()
+
+# --- helpers ---
 
 notify() {
   local title="$1" msg="$2" urgency="${3:-normal}"
   echo "[$(date '+%H:%M:%S')] $title: $msg"
-  command -v notify-send &>/dev/null &&
-    notify-send -u "$urgency" "$title" "$msg"
+  command -v notify-send &>/dev/null && notify-send -u "$urgency" "$title" "$msg"
 }
 
-# ── Зависимости ───────────────────────────────────────────────────────────────
-for cmd in pactl; do
-  command -v "$cmd" &>/dev/null || {
-    notify "Ошибка" "Установите $cmd" "critical"
-    exit 1
-  }
-done
+require() {
+  for cmd in "$@"; do
+    command -v "$cmd" &>/dev/null || {
+      notify "Error" "Install $cmd" "critical"
+      exit 1
+    }
+  done
+}
 
-# ── Источники звука ───────────────────────────────────────────────────────────
-# Монитор дефолтного синка = системный звук (всё что играет)
-SYSTEM_AUDIO="$(pactl get-default-sink).monitor"
+# --- audio ---
 
-# Дефолтный микрофон
-MIC_SOURCE="$(pactl get-default-source)"
-
-# Если дефолтный source уже является монитором — mic недоступен
-if [[ "$MIC_SOURCE" == *.monitor ]]; then
-  MIC_SOURCE=""
-fi
-
-# ── Виртуальный микс: система + микрофон через PipeWire ───────────────────────
-# Временный null-sink который объединяет оба источника
-setup_combined_audio() {
-  # Временный виртуальный синк для микса
+setup_audio() {
   COMBINED_SINK=$(pactl load-module module-null-sink \
     sink_name=screencast_mix \
     sink_properties=device.description=ScreencastMix 2>/dev/null)
 
-  if [ -z "$COMBINED_SINK" ]; then
-    # Не удалось — использовать истемный звук
-    echo "$SYSTEM_AUDIO"
-    return
-  fi
+  [[ -z "$COMBINED_SINK" ]] && echo "$SYSTEM_AUDIO" && return
 
-  # Перенаправить системный монитор в микс
-  pactl load-module module-loopback \
-    source="$SYSTEM_AUDIO" \
-    sink=screencast_mix \
-    latency_msec=50 &>/dev/null
+  local lb
+  lb=$(pactl load-module module-loopback \
+    source="$SYSTEM_AUDIO" sink=screencast_mix latency_msec=50 2>/dev/null)
+  [[ -n "$lb" ]] && LOOPBACK_MODULES+=("$lb")
 
-  # Перенаправить микрофон в микс (если есть)
-  if [ -n "$MIC_SOURCE" ]; then
-    pactl load-module module-loopback \
-      source="$MIC_SOURCE" \
-      sink=screencast_mix \
-      latency_msec=50 &>/dev/null
+  if [[ -n "$MIC_SOURCE" ]]; then
+    lb=$(pactl load-module module-loopback \
+      source="$MIC_SOURCE" sink=screencast_mix latency_msec=50 2>/dev/null)
+    [[ -n "$lb" ]] && LOOPBACK_MODULES+=("$lb")
   fi
 
   echo "screencast_mix.monitor"
 }
 
-cleanup_combined_audio() {
-  pactl unload-module module-loopback 2>/dev/null || true
-  [ -n "$COMBINED_SINK" ] &&
-    pactl unload-module "$COMBINED_SINK" 2>/dev/null || true
+cleanup_audio() {
+  for mod in "${LOOPBACK_MODULES[@]}"; do
+    pactl unload-module "$mod" 2>/dev/null
+  done
+  [[ -n "$COMBINED_SINK" ]] && pactl unload-module "$COMBINED_SINK" 2>/dev/null
 }
 
-# ── Зависимости по сессии проверяются позже
+cleanup() {
+  [[ -n "$REC_PID" ]] && kill -SIGINT "$REC_PID" 2>/dev/null && wait "$REC_PID" 2>/dev/null
+  cleanup_audio
+  rm -f /tmp/screencast.pid
+  notify "Stopped" "Recording stopped"
+}
 
-# ── Определение сессии ───────────────────────────────────────────────────────
+trap cleanup INT TERM EXIT
+
+# --- session ---
+
+require pactl
+
+SYSTEM_AUDIO="$(pactl get-default-sink).monitor"
+MIC_SOURCE="$(pactl get-default-source)"
+[[ "$MIC_SOURCE" == *.monitor ]] && MIC_SOURCE=""
+
 IS_WAYLAND=false
 IS_X11=false
-[ "$XDG_SESSION_TYPE" = "wayland" ] || [ -n "$WAYLAND_DISPLAY" ] && IS_WAYLAND=true
-[ "$XDG_SESSION_TYPE" = "x11" ] || [ -n "$DISPLAY" ] && IS_X11=true
+[[ "$XDG_SESSION_TYPE" == "wayland" || -n "$WAYLAND_DISPLAY" ]] && IS_WAYLAND=true
+[[ "$XDG_SESSION_TYPE" == "x11" || -n "$DISPLAY" ]] && IS_X11=true
 
-if ! $IS_WAYLAND && ! $IS_X11; then
-  notify "Ошибка" "Не удалось определить тип сессии" "critical"
+$IS_WAYLAND || $IS_X11 || {
+  notify "Error" "Unknown session type" "critical"
   exit 1
-fi
+}
 
-# Проверка зависимостей по сессии
-if $IS_WAYLAND; then
-  for cmd in wf-recorder slurp; do
-    command -v "$cmd" &>/dev/null || {
-      notify "Ошибка" "Установите $cmd: sudo pacman -S $cmd" "critical"
-      exit 1
-    }
-  done
-else
-  for cmd in ffmpeg xrandr; do
-    command -v "$cmd" &>/dev/null || {
-      notify "Ошибка" "Установите $cmd" "critical"
-      exit 1
-    }
-  done
-fi
+# --- area selection ---
 
-# ── Выбор области (только Wayland) ───────────────────────────────────────────
 AREA=""
 if $IS_WAYLAND; then
-  notify "Выбор области" "Выберите область для записи"
+  require wf-recorder slurp
+  notify "Select area" "Draw a region to record"
   AREA=$(slurp 2>/dev/null)
-  [ -z "$AREA" ] && {
-    notify "Отменено" "Область не выбрана" "critical"
+  [[ -z "$AREA" ]] && {
+    notify "Cancelled" "No area selected" "critical"
     exit 1
   }
+else
+  require ffmpeg xrandr
 fi
 
-# ── Настройка аудио ───────────────────────────────────────────────────────────
-if [ -n "$MIC_SOURCE" ]; then
-  notify "Аудио" "Система + микрофон → виртуальный микс"
-  AUDIO_SOURCE=$(setup_combined_audio)
-  trap cleanup_combined_audio EXIT
+# --- audio setup ---
+
+if [[ -n "$MIC_SOURCE" ]]; then
+  notify "Audio" "System + mic → virtual mix"
+  AUDIO_SOURCE=$(setup_audio)
 else
-  notify "Аудио" "Только системный звук: $SYSTEM_AUDIO"
+  notify "Audio" "System only: $SYSTEM_AUDIO"
   AUDIO_SOURCE="$SYSTEM_AUDIO"
 fi
 
-# ── Запись ────────────────────────────────────────────────────────────────────
-notify "Запись" "Начало записи. Ctrl+C для остановки."
+# --- record ---
 
-cleanup_recording() {
-  [ -n "$WF_PID" ] && kill -SIGINT "$WF_PID" 2>/dev/null
-  wait "$WF_PID" 2>/dev/null
-  notify "Остановка" "Запись остановлена"
-  rm -f /tmp/screencast.pid
-}
-trap cleanup_recording INT TERM
+notify "Recording" "Started. Ctrl+C to stop."
 
 if $IS_WAYLAND; then
-  # Wayland — wf-recorder
   wf-recorder \
     -g "$AREA" \
     -f "$OUTPUT" \
     --codec libx264 \
     --audio="$AUDIO_SOURCE" \
     --no-dmabuf &
-  WF_PID=$!
-  echo "$WF_PID" >/tmp/screencast.pid
-
-elif $IS_X11; then
-  # X11 — ffmpeg x11grab
-  RES=$(xrandr 2>/dev/null | grep "\*" | head -1 | awk "{print \$1}")
-  [ -z "$RES" ] && RES="1366x768"
-  notify "Запись" "X11: $RES | Аудио: $AUDIO_SOURCE"
-
+else
+  RES=$(xrandr 2>/dev/null | awk '/\*/ {print $1; exit}')
+  [[ -z "$RES" ]] && RES="1920x1080"
   ffmpeg -hide_banner \
     -f pulse -i "$AUDIO_SOURCE" \
-    -f x11grab \
-    -video_size "$RES" \
-    -framerate 30 \
-    -i ":0.0" \
-    -c:v libx264 -crf 23 -preset fast \
-    -pix_fmt yuv420p \
+    -f x11grab -video_size "$RES" -framerate 30 -i ":0.0" \
+    -c:v libx264 -crf 23 -preset fast -pix_fmt yuv420p \
     -c:a aac -b:a 128k \
     -y "$OUTPUT" &
-  WF_PID=$!
-  echo "$WF_PID" >/tmp/screencast.pid
 fi
 
-wait $WF_PID
-EXIT_CODE=$?
+REC_PID=$!
+echo "$REC_PID" >/tmp/screencast.pid
+wait "$REC_PID"
 
-# Сброс trap
-trap - INT TERM EXIT
-cleanup_combined_audio 2>/dev/null
+# trap EXIT handles cleanup automatically
 
-# ── Результат ─────────────────────────────────────────────────────────────────
-# EXIT_CODE 130/255 = завершение сигналом (Ctrl+C) = OK
-if [ -f "$OUTPUT" ] && [ -s "$OUTPUT" ]; then
-  SIZE=$(du -h "$OUTPUT" 2>/dev/null | cut -f1)
-  notify "Готово" "$OUTPUT ($SIZE)"
+# --- result ---
+
+if [[ -f "$OUTPUT" && -s "$OUTPUT" ]]; then
+  SIZE=$(du -h "$OUTPUT" | cut -f1)
+  notify "Done" "$OUTPUT ($SIZE)"
 else
-  notify "Ошибка" "Файл не создан" "critical"
+  notify "Error" "Output file not created" "critical"
   exit 1
 fi

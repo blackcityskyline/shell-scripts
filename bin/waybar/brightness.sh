@@ -1,46 +1,50 @@
 #!/usr/bin/env bash
+# Audio visualizer for Waybar
 
-# Brightness module for Waybar
+BARS=("▁" "▂" "▃" "▄" "▅" "▆" "▇" "█")
+CACHE_FILE="/tmp/waybar_audio_viz"
+NUM_BARS=5
+IDLE_BAR="▁▁▁▁▁"
 
-# Get brightness info
-brightness_percentage=0
+get_volume() {
+  pactl list sinks | awk '/Volume: front/ {gsub(/%/, "", $5); print $5; exit}'
+}
 
-# Try brightnessctl first
-if command -v brightnessctl &>/dev/null; then
-  brightness_info=$(brightnessctl info 2>/dev/null)
-  brightness_percentage=$(echo "$brightness_info" | grep -oP "\(\K\d+(?=%)\)" | head -1 2>/dev/null || echo "0")
-fi
-
-# Fallback to sysfs
-if [ -z "$brightness_percentage" ] || ! [[ "$brightness_percentage" =~ ^[0-9]+$ ]]; then
-  if [ -d /sys/class/backlight ]; then
-    device=$(ls /sys/class/backlight | head -1 2>/dev/null)
-    if [ -n "$device" ] && [ -f "/sys/class/backlight/$device/brightness" ]; then
-      brightness=$(cat "/sys/class/backlight/$device/brightness" 2>/dev/null || echo "0")
-      max_brightness=$(cat "/sys/class/backlight/$device/max_brightness" 2>/dev/null || echo "100")
-
-      if [[ "$brightness" =~ ^[0-9]+$ ]] && [[ "$max_brightness" =~ ^[0-9]+$ ]] && [ "$max_brightness" -gt 0 ]; then
-        brightness_percentage=$((brightness * 100 / max_brightness))
-      fi
-    fi
+max_height() {
+  local vol=$1
+  if [[ $vol -gt 70 ]]; then
+    echo 7
+  elif [[ $vol -gt 40 ]]; then
+    echo 5
+  elif [[ $vol -gt 20 ]]; then
+    echo 4
+  else
+    echo 3
   fi
+}
+
+if ! playerctl status 2>/dev/null | grep -q "Playing"; then
+  echo "$IDLE_BAR"
+  rm -f "$CACHE_FILE"
+  exit 0
 fi
 
-# Ensure it's a number
-if ! [[ "$brightness_percentage" =~ ^[0-9]+$ ]]; then
-  brightness_percentage=0
-fi
+volume=$(get_volume)
+max=$(max_height "$volume")
 
-# Brightness icon with safe comparisons
-if [ "$brightness_percentage" -lt 20 ] 2>/dev/null; then
-  icon="󰃞"
-elif [ "$brightness_percentage" -lt 50 ] 2>/dev/null; then
-  icon="󰃟"
-elif [ "$brightness_percentage" -lt 80 ] 2>/dev/null; then
-  icon="󰃝"
-else
-  icon="󰃠"
-fi
+mapfile -t prev <"$CACHE_FILE" 2>/dev/null
+[[ ${#prev[@]} -lt $NUM_BARS ]] && prev=(3 2 4 3 2)
 
-# Output JSON
-echo "{\"text\": \"$icon $brightness_percentage%\", \"tooltip\": \"Brightness: $brightness_percentage%\"}"
+output=""
+new_vals=()
+
+for ((i = 0; i < NUM_BARS; i++)); do
+  val=$((prev[i] + (RANDOM % 5) - 2))
+  ((val < 0)) && val=0
+  ((val > max)) && val=$max
+  new_vals+=("$val")
+  output+="${BARS[$val]}"
+done
+
+printf "%s\n" "${new_vals[@]}" >"$CACHE_FILE"
+echo "$output"

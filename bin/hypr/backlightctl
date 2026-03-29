@@ -1,0 +1,51 @@
+#!/usr/bin/env bash
+# Brightness control: up | down | saver
+
+BACKLIGHT=$(ls /sys/class/backlight 2>/dev/null | head -1)
+[[ -z "$BACKLIGHT" ]] && exit 1
+BACKLIGHT="/sys/class/backlight/$BACKLIGHT"
+
+CACHE="/tmp/brightness_saved"
+
+max=$(cat "$BACKLIGHT/max_brightness")
+cur=$(cat "$BACKLIGHT/brightness")
+step=$((max / 20))
+
+set_brightness() {
+  local val=$1
+  ((val < 0)) && val=0
+  ((val > max)) && val=$max
+  echo "$val" >"$BACKLIGHT/brightness"
+  swayosd-client --brightness $((val * 100 / max))
+}
+
+case "$1" in
+up)
+  if [[ $cur -eq 0 ]] && [[ -f "$CACHE" ]]; then
+    set_brightness "$(cat "$CACHE")"
+  else
+    set_brightness $((cur + step))
+  fi
+  ;;
+down)
+  new=$((cur - step))
+  if ((new <= 1)); then
+    echo "$cur" >"$CACHE"
+    echo 0 >"$BACKLIGHT/brightness" # напрямую, минуя swayosd
+  else
+    set_brightness "$new"
+  fi
+  ;;
+saver)
+  if [[ $cur -gt 0 ]]; then
+    echo "$cur" >"$CACHE"
+    echo 0 >"$BACKLIGHT/brightness" # напрямую, минуя swayosd
+  else
+    set_brightness "$(cat "$CACHE" 2>/dev/null || echo "$max")"
+  fi
+  ;;
+*)
+  echo "Usage: $(basename "$0") up | down | toggle"
+  exit 1
+  ;;
+esac
