@@ -1,0 +1,284 @@
+#!/usr/bin/env bash
+# Audio control for Hyprland / Waybar
+# Commands:
+# mute, up, down, group <n n>, ungroup, group restore,
+# sink <n>, sink-next, source <n>, source-next,
+# sink save, sink restore, app <name> <sink>
+
+STEP=5
+GROUP_MODULE_FILE="/tmp/audio_group_module"
+GROUP_SLAVES_FILE="/tmp/audio_group_slaves"
+RESTORE_FILE="$HOME/.local/share/audio_restore"
+
+sinks() { pactl list short sinks | awk '!/ScreencastMix|group/ {print $2}'; }
+sources() { pactl list short sources | awk '!/monitor/ {print $2}'; }
+default() { pactl get-default-sink; }
+default_source() { pactl get-default-source; }
+
+group_slaves() {
+  [[ -f "$GROUP_SLAVES_FILE" ]] && cat "$GROUP_SLAVES_FILE" && return
+  pactl list short modules | awk '/module-combine-sink/ {
+        for(i=1;i<=NF;i++) if($i~/slaves=/) { sub(/slaves=/,"",$i); print $i }
+    }' | tr ',' '\n'
+}
+
+free_sinks() {
+  local slaves
+  slaves=$(group_slaves)
+  sinks | while read -r sink; do
+    echo "$slaves" | grep -qx "$sink" || echo "$sink"
+  done
+}
+
+set_sink() {
+  local name="$1"
+  if ! pactl list short sinks | awk '{print $2}' | grep -qx "$name"; then
+    notify-send "Audio" "Sink not found: $name"
+    return 1
+  fi
+
+  local tmp
+  tmp=$(pactl list short sinks | awk -v target="$name" '$2 != target && !/ScreencastMix|group/ {print $2; exit}')
+
+  pactl list sink-inputs | awk '
+        /^Sink Input #/ { id = substr($3, 2) }
+        /^\t+application\.name = / {
+            match($0, /"[^"]+"$/); name = substr($0, RSTART+1, RLENGTH-2)
+            if (name != "group output") print id
+        }
+    ' | while read -r id; do
+    [[ -n "$tmp" ]] && pactl move-sink-input "$id" "$tmp" 2>/dev/null
+    pactl move-sink-input "$id" "$name" 2>/dev/null
+  done
+
+  pactl set-default-sink "$name"
+}
+
+set_source() {
+  local name="$1"
+  if ! pactl list short sources | awk '{print $2}' | grep -qx "$name"; then
+    notify-send "Audio" "Source not found: $name"
+    return 1
+  fi
+  pactl set-default-source "$name"
+}
+
+case "$1" in
+up) swayosd-client --output-volume raise ;;
+down) swayosd-client --output-volume lower ;;
+mute) swayosd-client --output-volume mute-toggle ;;
+
+sink-next)
+  if [[ -f "$GROUP_MODULE_FILE" ]]; then
+    mapfile -t s < <({
+      free_sinks
+      echo "group"
+    })
+  else
+    mapfile -t s < <(sinks)
+  fi
+
+  [[ ${#s[@]} -eq 0 ]] && notify-send "Audio" "No free sinks" && exit 0
+
+  cur=$(default)
+  for ((i = 0; i < ${#s[@]}; i++)); do
+    if [[ "${s[$i]}" == "$cur" ]]; then
+      next="${s[$(((i + 1) % ${#s[@]}))]}"
+      set_sink "$next" && notify-send "Audio" "$next"
+      exit 0
+    fi
+  done
+
+  set_sink "${s[0]}" && notify-send "Audio" "${s[0]}"
+  ;;
+
+next-source)
+  mapfile -t s < <(sources)
+  [[ ${#s[@]} -eq 0 ]] && notify-send "Audio" "No sources" && exit 0
+
+  cur=$(default_source)
+  for ((i = 0; i < ${#s[@]}; i++)); do
+    if [[ "${s[$i]}" == "$cur" ]]; then
+      next="${s[$(((i + 1) % ${#s[@]}))]}"
+      set_source "$next" && notify-send "Audio (source)" "$next"
+      exit 0
+    fi
+  done
+
+  set_source "${s[0]}" && notify-send "Audio (source)" "${s[0]}"
+  ;;
+
+sink)
+  [[ -z "$2" ]] && echo "Usage: $(basename "$0") sink <index|name>" && exit 1
+  if [[ "$2" =~ ^[0-9]+$ ]]; then
+    name=$(pactl list short sinks | awk "NR==$(($2 + 1)) {print \$2}")
+  else
+    name="$2"
+  fi
+  [[ -z "$name" ]] && echo "Sink not found: $2" && exit 1
+  set_sink "$name" && notify-send "Audio" "$name"
+  ;;
+
+source)
+  [[ -z "$2" ]] && echo "Usage: $(basename "$0") source <index|name>" && exit 1
+  if [[ "$2" =~ ^[0-9]+$ ]]; then
+    name=$(pactl list short sources | awk '!/monitor/' | awk "NR==$(($2 + 1)) {print \$2}")
+  else
+    name="$2"
+  fi
+  [[ -z "$name" ]] && echo "Source not found: $2" && exit 1
+  set_source "$name" && notify-send "Audio (source)" "$name"
+  ;;
+
+sink-all)
+  while read -r sink; do
+    case "$2" in
+    up) pactl set-sink-volume "$sink" +${STEP}% ;;
+    down) pactl set-sink-volume "$sink" -${STEP}% ;;
+    mute) pactl set-sink-mute "$sink" toggle ;;
+    esac
+  done < <(sinks)
+  case "$2" in
+  up | down) swayosd-client --output-volume raise ;;
+  mute) swayosd-client --output-volume mute-toggle ;;
+  esac
+  ;;
+
+app)
+  [[ -z "$2" || -z "$3" ]] && echo "Usage: $(basename "$0") app <name> <sink_index|sink_name>" && exit 1
+
+  app_name="$2"
+  if [[ "$3" =~ ^[0-9]+$ ]]; then
+    sink=$(pactl list short sinks | awk "NR==$(($3 + 1)) {print \$2}")
+  else
+    sink="$3"
+  fi
+  [[ -z "$sink" ]] && echo "Sink not found: $3" && exit 1
+
+  input_id=$(pactl list sink-inputs | awk -v app="$app_name" '
+            /^Sink Input #/ { id = substr($3, 2) }
+            /^\t+application\.name = / {
+                match($0, /"[^"]+"$/); name = substr($0, RSTART+1, RLENGTH-2)
+                if (name == app) print id
+            }
+        ')
+
+  [[ -z "$input_id" ]] && echo "App not found: $app_name" && exit 1
+
+  pactl move-sink-input "$input_id" "$sink"
+  set_sink "$sink"
+  notify-send "Audio" "$app_name → $sink"
+  ;;
+
+group)
+  if [[ -z "$2" ]]; then
+    echo "Available sinks:"
+    pactl list short sinks | awk '!/ScreencastMix|group/ {printf "  [%d] %s\n", NR-1, $2}'
+    echo ""
+    echo "Usage: $(basename "$0") group 0 1"
+    echo "       $(basename "$0") group restore"
+    exit 0
+  fi
+
+  if [[ "$2" == "restore" ]]; then
+    [[ ! -f "$GROUP_SLAVES_FILE" ]] && echo "No saved group" && exit 1
+    [[ -f "$GROUP_MODULE_FILE" ]] && {
+      echo "Already grouped. Run ungroup first."
+      exit 1
+    }
+    slaves=$(paste -sd, <"$GROUP_SLAVES_FILE")
+    mkdir -p "$(dirname "$RESTORE_FILE")"
+    echo "$(default)" >"$RESTORE_FILE"
+    mod=$(pactl load-module module-combine-sink sink_name=group slaves="$slaves")
+    echo "$mod" >"$GROUP_MODULE_FILE"
+    set_sink group
+    notify-send "Audio" "Group restored: $slaves"
+    exit 0
+  fi
+
+  [[ -f "$GROUP_MODULE_FILE" ]] && {
+    echo "Already grouped. Run ungroup first."
+    exit 1
+  }
+
+  mapfile -t all < <(sinks)
+  slaves=""
+  for idx in "${@:2}"; do
+    [[ -n "${all[$idx]}" ]] && slaves+="${all[$idx]},"
+  done
+  slaves="${slaves%,}"
+
+  [[ -z "$slaves" ]] && echo "No valid sinks selected" && exit 1
+
+  mkdir -p "$(dirname "$RESTORE_FILE")"
+  echo "$(default)" >"$RESTORE_FILE"
+  mod=$(pactl load-module module-combine-sink sink_name=group slaves="$slaves")
+  echo "$mod" >"$GROUP_MODULE_FILE"
+  echo "$slaves" | tr ',' '\n' >"$GROUP_SLAVES_FILE"
+  set_sink group
+  notify-send "Audio" "Group: $slaves"
+  echo "Group: $slaves"
+  ;;
+
+ungroup)
+  [[ ! -f "$GROUP_MODULE_FILE" ]] && {
+    echo "No grouped sink active"
+    exit 1
+  }
+  pactl unload-module "$(cat "$GROUP_MODULE_FILE")"
+  rm -f "$GROUP_MODULE_FILE"
+
+  if [[ -f "$RESTORE_FILE" ]]; then
+    sink=$(cat "$RESTORE_FILE")
+    set_sink "$sink" || set_sink "$(sinks | head -1)"
+  else
+    set_sink "$(sinks | head -1)"
+  fi
+
+  notify-send "Audio" "Group removed"
+  ;;
+
+save)
+  mkdir -p "$(dirname "$RESTORE_FILE")"
+  echo "$(default)" >"$RESTORE_FILE"
+  echo "Saved: $(default)"
+  ;;
+
+restore)
+  [[ ! -f "$RESTORE_FILE" ]] && echo "No restore point saved" && exit 1
+  sink=$(cat "$RESTORE_FILE")
+  set_sink "$sink" && notify-send "Audio" "Restored: $sink"
+  ;;
+
+list)
+  echo "Output (Sink):"
+  default_sink=$(pactl get-default-sink)
+  pactl list short sinks | awk '!/ScreencastMix/ {print $2}' | while read -r name; do
+    vol=$(pactl get-sink-volume "$name" | grep -oP '\d+(?=%)' | head -1)
+    mute=$(pactl get-sink-mute "$name" | grep -q yes && echo " [MUTED]" || echo "")
+    marker=$([[ "$name" == "$default_sink" ]] && echo "→" || echo " ")
+    echo "  $marker $name ($vol%$mute)"
+  done
+
+  echo ""
+  echo "Input (Source):"
+  default_source=$(pactl get-default-source)
+  pactl list short sources | awk '!/monitor/ {print $2}' | while read -r name; do
+    vol=$(pactl get-source-volume "$name" | grep -oP '\d+(?=%)' | head -1)
+    mute=$(pactl get-source-mute "$name" | grep -q yes && echo " [MUTED]" || echo "")
+    marker=$([[ "$name" == "$default_source" ]] && echo "→" || echo " ")
+    echo "  $marker $name ($vol%$mute)"
+  done
+
+  echo ""
+  echo "Stream:"
+  pactl list sink-inputs | grep -oP '(?<=Volume: front-left: )\d+ /\s*\K\d+(?=%)|(?<=application\.name = ")[^"]+|(?<=media\.name = ")[^"]+' |
+    paste - - - | while IFS=$'\t' read -r vol app media; do
+    echo "  $app ($vol%) — $media"
+  done
+
+  [[ -f "$GROUP_MODULE_FILE" ]] && echo "" && echo "⚡ Group active: $(group_slaves | paste -sd,)"
+  ;;
+
+*) echo "up | down | mute | sink-next | next-source | sink-all <up|down|mute> | sink <n> | source <n> | app <name> <sink> | group [0 1 ..] | group restore | ungroup | save | restore | list" ;;
+esac
